@@ -1,0 +1,120 @@
+name: RDP Ultra Leve - TikTok & YouTube
+
+on:
+  workflow_dispatch:
+
+jobs:
+  secure-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Otimizar Windows, Desempenho, Rede e Audio RDP
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "SilentlyContinue"
+          Write-Host "Aplicando otimizacoes para streaming de video e RDP..."
+
+          # 1. Plano de energia Desempenho Maximo e prioridade de CPU
+          powercfg -duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61
+          powercfg -setactive e9a42b02-d5df-448d-aa00-03f14749eb61
+          Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl" -Name "Win32PrioritySeparation" -Value 38 -Force
+
+          # 2. Desativar Windows Defender e SmartScreen para liberar CPU e RAM
+          Set-MpPreference -DisableRealtimeMonitoring $true -DisableBehaviorMonitoring $true -DisableIOAVProtection $true
+          New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender" -Force | Out-Null
+          Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender" -Name "DisableAntiSpyware" -Value 1 -Force
+          Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" -Name "EnableSmartScreen" -Value 0 -Force
+
+          # 3. Parar servicos desnecessarios e garantir Audio ativo
+          $disableServices = @("SysMain", "WSearch", "Spooler", "wuauserv", "DiagTrack", "MapsBroker", "WerSvc", "TabletInputService", "BITS", "UsoSvc", "PcaSvc", "Themes", "DPS", "WdiServiceHost", "SgrmBroker")
+          foreach ($svc in $disableServices) {
+              Stop-Service -Name $svc -Force
+              Set-Service -Name $svc -StartupType Disabled
+          }
+          Set-Service -Name "Audiosrv" -StartupType Automatic
+          Start-Service -Name "Audiosrv"
+
+          # 4. Efeitos visuais leves (Modo Desempenho Total)
+          $visPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects"
+          New-Item -Path $visPath -Force | Out-Null
+          Set-ItemProperty -Path $visPath -Name "VisualFXSetting" -Value 2 -Force
+          Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name "DragFullWindows" -Value "0" -Force
+          Set-ItemProperty -Path "HKCU:\Control Panel\Desktop\WindowMetrics" -Name "MinAnimate" -Value "0" -Force
+          Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" -Name "EnableTransparency" -Value 0 -Force
+
+          # 5. Ativar Codec H.264/AVC e 60 FPS no RDP para videos fluidos
+          $rdpTs = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
+          New-Item -Path $rdpTs -Force | Out-Null
+          Set-ItemProperty -Path $rdpTs -Name "fEnableVirtualizedGraphics" -Value 1 -Force
+          Set-ItemProperty -Path $rdpTs -Name "bEnumerateHWBeforeSW" -Value 1 -Force
+          Set-ItemProperty -Path $rdpTs -Name "VisualExperiencePolicy" -Value 1 -Force
+          Set-ItemProperty -Path $rdpTs -Name "ColorDepth" -Value 4 -Force
+          Set-ItemProperty -Path $rdpTs -Name "fDisableAudioCapture" -Value 0 -Force
+          Set-ItemProperty -Path $rdpTs -Name "AVC444ModePreferred" -Value 1 -Force
+          Set-ItemProperty -Path $rdpTs -Name "MaxCompressionLevel" -Value 1 -Force
+
+          $rdpWin = "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp"
+          Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path $rdpWin -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path $rdpWin -Name "SecurityLayer" -Value 0 -Force
+          Set-ItemProperty -Path $rdpWin -Name "fDisableAudio" -Value 0 -Force
+          Set-ItemProperty -Path $rdpWin -Name "DWMFRAMEINTERVAL" -Value 16 -Force
+
+          # 6. Otimizacao de Rede TCP
+          netsh int tcp set global autotuninglevel=normal
+          netsh int tcp set global rss=enabled
+
+          # 7. Liberar Firewall (TCP e UDP 3389) e reiniciar RDP
+          netsh advfirewall firewall add rule name="RDP-Tailscale-TCP" dir=in action=allow protocol=TCP localport=3389 | Out-Null
+          netsh advfirewall firewall add rule name="RDP-Tailscale-UDP" dir=in action=allow protocol=UDP localport=3389 | Out-Null
+          Restart-Service -Name TermService -Force
+
+      - name: Instalar Brave Otimizado para Video (H.264)
+        shell: pwsh
+        run: |
+          Write-Host "Instalando Brave Browser..."
+          choco install brave -y --no-progress
+
+          # Cria Atalho do Brave forcando H.264 (sem AV1 pesado) e SwiftShader
+          $browserLite = @'
+          @echo off
+          start "" "C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe" --use-gl=angle --use-angle=swiftshader --disable-features=AV1Decoder,PlatformHEVCDecoderSupport,UseChromeOSDirectVideoDecoder --disable-gpu-sandbox --disable-dev-shm-usage --no-sandbox --disable-background-timer-throttling --enable-features=HighEfficiencyModeAvailable
+          '@
+          $browserLite | Out-File -FilePath "C:\Users\Public\Desktop\NAVEGADOR_VIDEOS.bat" -Encoding ASCII
+
+      - name: Criar Usuario e Instalar Tailscale
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%&*"
+          $password = -join (1..16 | ForEach-Object { $chars[(Get-Random -Maximum $chars.Length)] })
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+
+          New-LocalUser -Name "Skyro" -Password $securePass -AccountNeverExpires | Out-Null
+          Add-LocalGroupMember -Group "Administrators" -Member "Skyro"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "Skyro"
+
+          choco install tailscale -y --no-progress
+
+          $tsExe = "$env:ProgramFiles\Tailscale\tailscale.exe"
+          if (-not (Test-Path $tsExe)) { $tsExe = "tailscale" }
+
+          & $tsExe up --authkey="${{ secrets.TAILSCALE_AUTH_KEY }}" --hostname="gh-runner-$env:GITHUB_RUN_ID" --unattended
+
+          $tsIP = $null
+          for ($i = 0; $i -lt 15; $i++) {
+              $tsIP = (& $tsExe ip -4)
+              if ($tsIP) { break }
+              Start-Sleep -Seconds 2
+          }
+
+          Write-Host "=========================================="
+          Write-Host "IP Tailscale: $tsIP"
+          Write-Host "Usuario: Skyro"
+          Write-Host "Senha: $password"
+          Write-Host "=========================================="
+
+          # Mantem a VM ativa por ate 6 horas
+          Start-Sleep -Seconds 21000
